@@ -1,0 +1,6 @@
+{
+  "name": "PetSitter Manager",
+  "description": "Gerenciamento profissional de clientes, pets, passeios, visitas e histórico de atendimentos para petsitters e dog walkers.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
