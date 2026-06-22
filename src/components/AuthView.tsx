@@ -6,7 +6,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Mail, Lock, User as UserIcon, Sparkles, LogIn, UserPlus } from 'lucide-react';
-import { StorageService } from '../utils/storage';
+import { FirebaseService } from '../utils/firebaseService';
 import { User } from '../types';
 
 interface AuthViewProps {
@@ -21,57 +21,85 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [showRecoveryMsg, setShowRecoveryMsg] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setShowRecoveryMsg(false);
+    setIsLoading(true);
+
+    const validateEmail = (emailStr: string) => {
+      const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return re.test(emailStr.trim());
+    };
 
     try {
       if (isLogin) {
         if (!email || !password) {
           setError('Preencha todos os campos.');
+          setIsLoading(false);
           return;
         }
-        const user = StorageService.loginUser(email, password);
+        if (!validateEmail(email)) {
+          setError('E-mail inválido. Por favor, forneça um endereço de e-mail válido.');
+          setIsLoading(false);
+          return;
+        }
+        const user = await FirebaseService.loginUser(email, password);
         onLoginSuccess(user);
       } else {
         if (!name || !email || !password || !confirmPassword) {
           setError('Preencha todos os campos.');
+          setIsLoading(false);
+          return;
+        }
+        if (!validateEmail(email)) {
+          setError('E-mail inválido. Por favor, forneça um endereço de e-mail válido.');
+          setIsLoading(false);
           return;
         }
         if (password !== confirmPassword) {
           setError('As senhas não coincidem.');
+          setIsLoading(false);
           return;
         }
         if (password.length < 6) {
           setError('A senha deve conter no mínimo 6 caracteres.');
+          setIsLoading(false);
           return;
         }
-        const user = StorageService.registerUser(name, email, password);
+        const user = await FirebaseService.registerUser(name, email, password);
         onLoginSuccess(user);
       }
     } catch (err: any) {
       setError(err.message || 'Ocorreu um erro inesperado.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleDemoLogin = (type: 'demo1' | 'demo2') => {
+  const handleDemoLogin = async (type: 'demo1' | 'demo2') => {
     setError('');
     setShowRecoveryMsg(false);
+    setIsLoading(true);
     try {
       const email = type === 'demo1' ? 'contato@petsitter.com' : 'marcela.walker@petsitter.com';
       const name = type === 'demo1' ? 'Carlos Designer' : 'Marcela Walkers';
+      const password = '123456';
       
       let user;
       try {
-        user = StorageService.loginUser(email, '123456');
-      } catch {
-        user = StorageService.registerUser(name, email, '123456');
+        user = await FirebaseService.loginUser(email, password);
+      } catch (loginErr) {
+        // If login failed, try registration
+        user = await FirebaseService.registerUser(name, email, password);
       }
       onLoginSuccess(user);
     } catch (err: any) {
       setError(err.message || 'Erro ao carregar dados demonstrativos.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -230,9 +258,12 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
 
             <button
               type="submit"
-              className="w-full mt-2 flex justify-center items-center gap-2 py-3 px-4 rounded-full text-sm font-semibold text-white bg-[#5A5A40] hover:bg-[#6B6B4F] transition-colors cursor-pointer"
+              disabled={isLoading}
+              className="w-full mt-2 flex justify-center items-center gap-2 py-3 px-4 rounded-full text-sm font-semibold text-white bg-[#5A5A40] hover:bg-[#6B6B4F] disabled:opacity-50 transition-colors cursor-pointer"
             >
-              {isLogin ? (
+              {isLoading ? (
+                <span>Carregando...</span>
+              ) : isLogin ? (
                 <>
                   <LogIn className="h-4.5 w-4.5" /> Entrar no Sistema
                 </>
@@ -252,16 +283,18 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
             <div className="grid grid-cols-1 gap-2.5 font-sans">
               <button
                 type="button"
+                disabled={isLoading}
                 onClick={() => handleDemoLogin('demo1')}
-                className="w-full py-2.5 px-3 border border-[#E9E9D8] rounded-xl bg-[#F9F8F3] hover:bg-[#FEFAE0]/85 text-[#424231] text-xs font-semibold transition-colors flex items-center justify-between cursor-pointer"
+                className="w-full py-2.5 px-3 border border-[#E9E9D8] rounded-xl bg-[#F9F8F3] hover:bg-[#FEFAE0]/85 text-[#424231] text-xs font-semibold transition-colors flex items-center justify-between cursor-pointer disabled:opacity-50"
               >
                 <span>Tutor Modelo: Carlos Designer (Ana)</span>
                 <span className="text-[#5A5A40] font-bold flex items-center gap-0.5">Testar &rarr;</span>
               </button>
               <button
                 type="button"
+                disabled={isLoading}
                 onClick={() => handleDemoLogin('demo2')}
-                className="w-full py-2.5 px-3 border border-[#E9E9D8] rounded-xl bg-[#F9F8F3] hover:bg-[#FEFAE0]/85 text-[#424231] text-xs font-semibold transition-colors flex items-center justify-between cursor-pointer"
+                className="w-full py-2.5 px-3 border border-[#E9E9D8] rounded-xl bg-[#F9F8F3] hover:bg-[#FEFAE0]/85 text-[#424231] text-xs font-semibold transition-colors flex items-center justify-between cursor-pointer disabled:opacity-50"
               >
                 <span>Tutor Modelo: Marcela (Spitz & Persa)</span>
                 <span className="text-[#5A5A40] font-bold flex items-center gap-0.5">Testar &rarr;</span>

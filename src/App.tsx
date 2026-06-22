@@ -6,7 +6,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LayoutGrid, Users, Dog, Footprints, History, LogOut, HelpCircle, Heart, Menu, X, CheckSquare } from 'lucide-react';
-import { StorageService } from './utils/storage';
+import { auth } from './utils/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { FirebaseService } from './utils/firebaseService';
 import { User, Client, Pet, Walk } from './types';
 
 // Importing view components
@@ -29,92 +31,210 @@ export default function App() {
   // Selected quickpet state for agenda deep initiation
   const [quickPetId, setQuickPetId] = useState<string | null>(null);
 
-  // Load user profile on initial mounting
+  // Connection and loads
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [isDataLoading, setIsDataLoading] = useState(false);
+
+  // Confirmation Modal and Toast notification states
+  const [confirmModal, setConfirmModal] = useState<{
+    message: string;
+    description?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+
+  const [notification, setNotification] = useState<{
+    message: string;
+    type: 'success' | 'error' | 'info';
+  } | null>(null);
+
+  // Auto-dismiss notifications
   useEffect(() => {
-    const user = StorageService.getCurrentUser();
-    if (user) {
-      setCurrentUser(user);
-      loadUserData(user.id);
+    if (notification) {
+      const timer = setTimeout(() => {
+        setNotification(null);
+      }, 4500);
+      return () => clearTimeout(timer);
     }
-  }, []);
+  }, [notification]);
 
-  const loadUserData = (userId: string) => {
-    // Ensuring seed exists
-    StorageService.seedDemoDataForUser(userId);
-
-    const lClients = StorageService.getClients(userId);
-    const lPets = StorageService.getPets(userId);
-    const lWalks = StorageService.getWalks(userId);
-
-    setClients(lClients);
-    setPets(lPets);
-    setWalks(lWalks);
+  const showConfirm = (message: string, description: string | undefined, onConfirm: () => void | Promise<void>) => {
+    setConfirmModal({ message, description, onConfirm });
   };
 
-  const handleLoginSuccess = (user: User) => {
-    StorageService.setCurrentUser(user);
+  const showAlert = (message: string, type: 'success' | 'error' | 'info' = 'error') => {
+    setNotification({ message, type });
+  };
+
+  // Load user profile on initial mounting
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        const userObj: User = {
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuário',
+          email: firebaseUser.email || ''
+        };
+        setCurrentUser(userObj);
+        await loadUserData(userObj.id);
+      } else {
+        setCurrentUser(null);
+        setClients([]);
+        setPets([]);
+        setWalks([]);
+        setQuickPetId(null);
+      }
+      setIsInitializing(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const loadUserData = async (userId: string) => {
+    setIsDataLoading(true);
+    try {
+      const [lClients, lPets, lWalks] = await Promise.all([
+        FirebaseService.getClients(userId),
+        FirebaseService.getPets(userId),
+        FirebaseService.getWalks(userId)
+      ]);
+      setClients(lClients);
+      setPets(lPets);
+      setWalks(lWalks);
+    } catch (err) {
+      console.error('Error loading firebase data:', err);
+    } finally {
+      setIsDataLoading(false);
+    }
+  };
+
+  const handleLoginSuccess = async (user: User) => {
     setCurrentUser(user);
-    loadUserData(user.id);
+    await loadUserData(user.id);
     setCurrentView('dashboard');
   };
 
-  const handleLogout = () => {
-    if (window.confirm('Excluir sessão profissional ativa? Seus dados salvos localmente continuarão disponíveis.')) {
-      StorageService.setCurrentUser(null);
-      setCurrentUser(null);
-      setClients([]);
-      setPets([]);
-      setWalks([]);
-      setQuickPetId(null);
-      setCurrentView('dashboard');
-    }
+  const handleLogout = async () => {
+    showConfirm(
+      'Deseja desconectar?',
+      'Sua sessão profissional ativa será encerrada. Seus dados salvos continuarão disponíveis no Firebase e você poderá entrar novamente a qualquer momento.',
+      async () => {
+        try {
+          await FirebaseService.logoutUser();
+          setCurrentUser(null);
+          setClients([]);
+          setPets([]);
+          setWalks([]);
+          setQuickPetId(null);
+          setCurrentView('dashboard');
+          showAlert('Sessão encerrada com sucesso.', 'success');
+        } catch (err: any) {
+          showAlert(err.message || 'Erro ao realizar logout.', 'error');
+        }
+      }
+    );
   };
 
   // --- CLIENT ACTIONS ---
-  const handleAddClient = (clientData: Omit<Client, 'id' | 'userId' | 'createdAt'>) => {
+  const handleAddClient = async (clientData: Omit<Client, 'id' | 'userId' | 'createdAt'>) => {
     if (!currentUser) return;
-    const newCli = StorageService.addClient(currentUser.id, clientData);
-    setClients(prev => [newCli, ...prev]);
+    try {
+      const newCli = await FirebaseService.addClient(currentUser.id, clientData);
+      setClients(prev => [newCli, ...prev]);
+      showAlert('Tutor cadastrado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao adicionar tutor.', 'error');
+    }
   };
 
-  const handleUpdateClient = (updatedClient: Client) => {
+  const handleUpdateClient = async (updatedClient: Client) => {
     if (!currentUser) return;
-    StorageService.updateClient(currentUser.id, updatedClient);
-    setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+    try {
+      await FirebaseService.updateClient(currentUser.id, updatedClient);
+      setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+      showAlert('Tutor atualizado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao atualizar tutor.', 'error');
+    }
   };
 
-  const handleDeleteClient = (clientId: string) => {
+  const handleDeleteClient = async (clientId: string) => {
     if (!currentUser) return;
-    StorageService.deleteClient(currentUser.id, clientId);
-    // Reload state as this modifies pets too
-    loadUserData(currentUser.id);
+    showConfirm(
+      'Excluir tutor?',
+      'Esta ação é permanente e removerá todos os pets deste tutor.',
+      async () => {
+        try {
+          await FirebaseService.deleteClient(currentUser.id, clientId);
+          await loadUserData(currentUser.id);
+          showAlert('Tutor e seus pets excluídos com sucesso.', 'success');
+        } catch (err: any) {
+          showAlert(err.message || 'Erro ao excluir tutor.', 'error');
+        }
+      }
+    );
   };
 
   // --- PET ACTIONS ---
-  const handleAddPet = (petData: Omit<Pet, 'id' | 'userId'>) => {
+  const handleAddPet = async (petData: Omit<Pet, 'id' | 'userId'>) => {
     if (!currentUser) return;
-    const newPt = StorageService.addPet(currentUser.id, petData);
-    setPets(prev => [...prev, newPt]);
+    try {
+      const newPt = await FirebaseService.addPet(currentUser.id, petData);
+      setPets(prev => [...prev, newPt]);
+      showAlert('Pet cadastrado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao adicionar pet.', 'error');
+    }
   };
 
-  const handleUpdatePet = (updatedPet: Pet) => {
+  const handleUpdatePet = async (updatedPet: Pet) => {
     if (!currentUser) return;
-    StorageService.updatePet(currentUser.id, updatedPet);
-    setPets(prev => prev.map(p => p.id === updatedPet.id ? updatedPet : p));
+    try {
+      await FirebaseService.updatePet(currentUser.id, updatedPet);
+      setPets(prev => prev.map(p => p.id === updatedPet.id ? updatedPet : p));
+      showAlert('Dados do pet atualizados com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao atualizar pet.', 'error');
+    }
   };
 
-  const handleDeletePet = (petId: string) => {
+  const handleDeletePet = async (petId: string) => {
     if (!currentUser) return;
-    StorageService.deletePet(currentUser.id, petId);
-    setPets(prev => prev.filter(p => p.id !== petId));
+    showConfirm(
+      'Remover este pet?',
+      'Esta ação não pode ser desfeita e removerá os dados deste pet.',
+      async () => {
+        try {
+          await FirebaseService.deletePet(currentUser.id, petId);
+          setPets(prev => prev.filter(p => p.id !== petId));
+          showAlert('Pet removido com sucesso.', 'success');
+        } catch (err: any) {
+          showAlert(err.message || 'Erro ao remover pet.', 'error');
+        }
+      }
+    );
   };
 
   // --- WALK ACTIONS ---
-  const handleWalkFinished = (completedWalk: Walk) => {
+  const handleWalkFinished = async (completedWalk: Walk) => {
     if (!currentUser) return;
-    StorageService.addWalk(currentUser.id, completedWalk);
-    setWalks(prev => [completedWalk, ...prev]);
-    setQuickPetId(null); // Clean up selection
+    try {
+      const walkData = {
+        userId: completedWalk.userId,
+        petIds: completedWalk.petIds,
+        startTime: completedWalk.startTime,
+        endTime: completedWalk.endTime,
+        durationMinutes: completedWalk.durationMinutes,
+        notes: completedWalk.notes,
+        photos: completedWalk.photos,
+        events: completedWalk.events,
+        routeSimulated: completedWalk.routeSimulated || []
+      };
+      const savedWalk = await FirebaseService.addWalk(currentUser.id, walkData);
+      setWalks(prev => [savedWalk, ...prev]);
+      setQuickPetId(null); // Clean up selection
+      showAlert('Passeio registrado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao salvar passeio.', 'error');
+    }
   };
 
   const handleStartWalkFromAgenda = (petId: string) => {
@@ -132,8 +252,19 @@ export default function App() {
   // Quick helper to route directly to register a pet for a client
   const handleQuickAddPetForClient = (clientId: string) => {
     setCurrentView('pets');
-    // Opens form directly in Pets view, handled by matching context or can let them toggle
   };
+
+  // Initializing Loader
+  if (isInitializing) {
+    return (
+      <div id="initializing-overlay" className="min-h-screen bg-[#F9F8F3] flex flex-col items-center justify-center font-sans p-4">
+        <div className="h-14 w-14 bg-[#E9EDC9] text-[#5A5A40] rounded-full flex items-center justify-center border border-[#CCD5AE]/40 animate-pulse">
+          🐾
+        </div>
+        <p className="mt-4 text-xs font-bold text-[#8C8C73] uppercase tracking-widest animate-pulse">Sincronizando com Firestore...</p>
+      </div>
+    );
+  }
 
   // Safe checks
   if (!currentUser) {
@@ -338,6 +469,87 @@ export default function App() {
           <span className="text-[9px] tracking-wide">Histórico</span>
         </button>
       </nav>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: -50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
+          >
+            <div className={`flex items-center gap-2.5 px-4.5 py-3 rounded-xl shadow-lg border text-sm font-semibold max-w-sm sm:max-w-md ${
+              notification.type === 'success' 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                : notification.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-800'
+            }`}>
+              <span>
+                {notification.type === 'success' ? '✅' : notification.type === 'error' ? '❌' : 'ℹ️'}
+              </span>
+              <span className="flex-1 leading-tight">{notification.message}</span>
+              <button onClick={() => setNotification(null)} className="text-current opacity-70 hover:opacity-100 shrink-0 ml-1 cursor-pointer">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Custom Confirmation Modal */}
+      <AnimatePresence>
+        {confirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setConfirmModal(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-xs"
+            />
+
+            {/* Modal Box */}
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 15, scale: 0.95 }}
+              transition={{ type: 'spring', duration: 0.3 }}
+              className="relative w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden border border-[#D4C3B3]/30 pointer-events-auto z-10 text-gray-950"
+            >
+              <div className="p-6">
+                <h3 className="text-lg font-bold text-gray-950 font-sans tracking-tight">
+                  {confirmModal.message}
+                </h3>
+                {confirmModal.description && (
+                  <p className="mt-2 text-sm text-gray-600 leading-relaxed font-sans">
+                    {confirmModal.description}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center justify-end gap-3 px-6 py-4 bg-[#FAF7F2] border-t border-[#F2ECE4]">
+                <button
+                  onClick={() => setConfirmModal(null)}
+                  className="px-4 py-2 text-xs font-bold text-gray-650 hover:bg-black/5 rounded-lg transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => {
+                    confirmModal.onConfirm();
+                    setConfirmModal(null);
+                  }}
+                  className="px-4.5 py-2.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 rounded-lg shadow-xs transition-colors cursor-pointer"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
