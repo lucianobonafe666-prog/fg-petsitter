@@ -5,28 +5,40 @@
 
 import React from 'react';
 import { Users, Dog, Footprints, Calendar, Clock, ChevronRight, Play, ArrowRight, CheckCircle } from 'lucide-react';
-import { Client, Pet, Walk } from '../types';
+import { Client, Pet, Walk, ScheduledWalk } from '../types';
 
 interface DashboardViewProps {
   clients: Client[];
   pets: Pet[];
   walks: Walk[];
-  onNavigate: (view: 'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history') => void;
+  onNavigate: (view: 'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history' | 'agenda') => void;
   onStartSpecificWalk: (petId: string) => void;
+  dbScheduledWalks: ScheduledWalk[];
 }
 
-export default function DashboardView({ clients, pets, walks, onNavigate, onStartSpecificWalk }: DashboardViewProps) {
+export default function DashboardView({ clients, pets, walks, onNavigate, onStartSpecificWalk, dbScheduledWalks }: DashboardViewProps) {
   // Statistics
   const totalClients = clients.length;
   const totalPets = pets.length;
   const completedWalks = walks.filter(w => w.endTime !== null).length;
   
-  // Custom scheduled walks for TODAY (realistic simulation)
-  const scheduledWalks = [
-    { id: 'sch-1', petId: 'demo-pet-1', time: '10:00', type: 'Passeio', petName: 'Pipoca', breed: 'Spitz Alemão', duration: '45 min' },
-    { id: 'sch-2', petId: 'demo-pet-2', time: '15:30', type: 'Passeio', petName: 'Zeus', breed: 'Golden Retriever', duration: '45 min' },
-    { id: 'sch-3', petId: 'demo-pet-3', time: '18:00', type: 'Visita Domiciliar', petName: 'Luna', breed: 'Persa', duration: '30 min' }
-  ].filter(sch => pets.some(p => p.id === sch.petId)); // only show if pets exist
+  // Custom scheduled walks for TODAY (real, loaded from DB)
+  const todayStr = new Date().toISOString().split('T')[0];
+  const scheduledWalks = dbScheduledWalks
+    .filter(sch => sch.date === todayStr && sch.status === 'Pendente')
+    .map(sch => {
+      const pet = pets.find(p => p.id === sch.petId);
+      return {
+        id: sch.id,
+        petId: sch.petId,
+        time: sch.time,
+        type: sch.type,
+        petName: pet ? pet.name : 'Pet Removido',
+        breed: pet ? pet.breed || pet.species : '',
+        duration: sch.duration,
+        photo: pet ? pet.photo : ''
+      };
+    });
 
   // Latest 3 completed walks
   const recentWalks = walks.filter(w => w.endTime !== null).slice(0, 3);
@@ -133,8 +145,12 @@ export default function DashboardView({ clients, pets, walks, onNavigate, onStar
                   className="p-4 rounded-2xl border border-[#E9E9D8]/60 bg-[#F9F8F3] hover:bg-[#E9EDC9]/10 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5"
                 >
                   <div className="flex items-center gap-3.5">
-                    <div className="w-12 h-12 bg-[#FEFAE0] rounded-xl flex items-center justify-center text-xl shrink-0 font-bold border border-[#E9E9D8]">
-                      🐕
+                    <div className="w-12 h-12 bg-[#FEFAE0] rounded-xl flex items-center justify-center text-xl shrink-0 font-bold border border-[#E9E9D8] overflow-hidden">
+                      {sch.photo && sch.photo.startsWith('data:image') ? (
+                        <img src={sch.photo} referrerPolicy="no-referrer" alt={sch.petName} className="h-full w-full object-cover rounded-xl" />
+                      ) : (
+                        sch.type === 'Visita Domiciliar' ? '🐈' : '🐕'
+                      )}
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
@@ -172,6 +188,14 @@ export default function DashboardView({ clients, pets, walks, onNavigate, onStar
               Atalhos Rápidos
             </h3>
             <div className="space-y-2.5">
+              <button
+                onClick={() => onNavigate('agenda')}
+                className="w-full p-4 rounded-xl border border-dashed border-[#5A5A40]/40 bg-[#FAF9F6] hover:bg-[#E9EDC9]/35 text-[#5A5A40] text-left font-bold text-xs transition-colors flex items-center justify-between group cursor-pointer"
+              >
+                <span className="flex items-center gap-1.5">📅 GERENCIAR SUA AGENDA</span>
+                <ChevronRight className="h-4 w-4 text-[#5A5A40] group-hover:translate-x-1 transition-transform" />
+              </button>
+
               <button
                 onClick={() => onNavigate('active-walk')}
                 className="w-full p-4 rounded-xl border border-[#E9E9D8] bg-[#E9EDC9]/30 hover:bg-[#E9EDC9]/65 text-[#5A5A40] text-left font-bold text-xs transition-colors flex items-center justify-between group cursor-pointer"

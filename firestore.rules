@@ -11,6 +11,11 @@ service cloud.firestore {
     }
     match /passeios/{passeioId} {
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow get: if true; // Allow public tracking via possession of the secure unguessable walk ID
+      allow list, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+    match /agendamentos/{agendamentoId} {
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
       allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
     }
   }

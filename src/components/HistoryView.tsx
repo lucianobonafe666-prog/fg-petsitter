@@ -4,8 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import { Search, Calendar, Clock, Footprints, ChevronUp, ChevronDown, MessageSquare, Copy, Filter, Camera, ShieldAlert } from 'lucide-react';
+import { Search, Calendar, Clock, Footprints, ChevronUp, ChevronDown, MessageSquare, Copy, Filter, Camera, ShieldAlert, MapPin } from 'lucide-react';
 import { Client, Pet, Walk, ActivityEvent } from '../types';
+import MapComponent from './MapComponent';
 
 interface HistoryViewProps {
   walks: Walk[];
@@ -53,11 +54,20 @@ export default function HistoryView({ walks, pets, clients }: HistoryViewProps) 
     return matchesClient && matchesPet && matchesPeriod;
   });
 
-  const getPetNames = (petIds: string[]) => {
-    return pets
-      .filter(p => petIds.includes(p.id))
-      .map(p => p.name)
-      .join(', ') || 'Pet Desconhecido';
+  const getPetNames = (walk: Walk) => {
+    const fromState = pets
+      .filter(p => walk.petIds.includes(p.id))
+      .map(p => p.name);
+
+    if (fromState.length > 0) {
+      return fromState.join(', ');
+    }
+
+    if (walk.petDetails && walk.petDetails.length > 0) {
+      return walk.petDetails.map(p => p.name).join(', ');
+    }
+
+    return 'Pet Desconhecido';
   };
 
   const formatWalkDate = (isoString: string) => {
@@ -198,7 +208,7 @@ export default function HistoryView({ walks, pets, clients }: HistoryViewProps) 
                     </div>
                     <div>
                       <h4 className="font-serif italic text-base sm:text-lg text-[#424231] leading-none">
-                        {getPetNames(walk.petIds)}
+                        {getPetNames(walk)}
                       </h4>
                       <p className="text-xs text-[#8C8C73] mt-1.5 flex items-center gap-2 flex-wrap font-medium">
                         <span className="flex items-center gap-1 shrink-0">
@@ -280,6 +290,20 @@ export default function HistoryView({ walks, pets, clients }: HistoryViewProps) 
                         "{walk.notes}"
                       </p>
                     </div>
+
+                    {/* Live GPS Route Map of Completed Walk */}
+                    {walk.routeSimulated && walk.routeSimulated.length > 0 && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-bold uppercase text-[#8C8C73] block tracking-widest font-sans flex items-center gap-1">
+                          <MapPin className="h-3.5 w-3.5 text-[#5A5A40]" /> Mapa do Percurso Coletado
+                        </span>
+                        <MapComponent 
+                          coordinates={walk.routeSimulated} 
+                          heightClass="h-44 sm:h-52"
+                          interactive={true}
+                        />
+                      </div>
+                    )}
 
                     {/* Chronological Activities bullet listing */}
                     {walk.events && walk.events.length > 0 && (

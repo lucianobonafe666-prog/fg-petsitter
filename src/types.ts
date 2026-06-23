@@ -82,6 +82,7 @@ export interface Walk {
   id: string;
   userId: string;
   petIds: string[]; // Can support multiple pets
+  petDetails?: { name: string; breed: string; photo?: string }[]; // embedded pet metadata for public sharing
   startTime: string; // ISO String
   endTime: string | null; // ISO String or null if active
   durationMinutes: number; // calculated
@@ -89,4 +90,19 @@ export interface Walk {
   photos: string[]; // base64 representation of snaps
   events: ActivityEvent[];
   routeSimulated?: { lat: number; lng: number }[]; // coordinates for path simulation
+}
+
+export type ScheduledWalkType = 'Passeio' | 'Visita Domiciliar' | 'Alimentação' | 'Medicamento' | 'Outro';
+export type ScheduledWalkStatus = 'Pendente' | 'Realizado' | 'Cancelado';
+
+export interface ScheduledWalk {
+  id: string;
+  userId: string;
+  petId: string;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM
+  type: ScheduledWalkType;
+  duration: string; // e.g. "30 min", "45 min", "1 hora"
+  notes?: string;
+  status: ScheduledWalkStatus;
 }

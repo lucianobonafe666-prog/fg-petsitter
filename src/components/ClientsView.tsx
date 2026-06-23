@@ -91,11 +91,9 @@ export default function ClientsView({
 
   const handleDelete = (clientId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('Atenção: Ao excluir o cliente, todos os seus pets serão removidos permanentemente. Confirmar exclusão?')) {
-      onDeleteClient(clientId);
-      if (expandedClientId === clientId) {
-        setExpandedClientId(null);
-      }
+    onDeleteClient(clientId);
+    if (expandedClientId === clientId) {
+      setExpandedClientId(null);
     }
   };
 

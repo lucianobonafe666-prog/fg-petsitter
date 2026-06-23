@@ -193,9 +193,7 @@ export default function PetsView({
   };
 
   const handleDelete = (petId: string) => {
-    if (window.confirm('Excluir esta ficha pet do banco de dados? Esta ação é irreversível.')) {
-      onDeletePet(petId);
-    }
+    onDeletePet(petId);
   };
 
   // Filter computation

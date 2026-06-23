@@ -4,13 +4,29 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, AlertCircle, Camera, Check, Clock, Edit2, MapPin, Plus, ShieldCheck, Droplet, Smile, MessageSquare, Trash, Sparkles, Footprints, ChevronUp, Copy, HelpCircle } from 'lucide-react';
+import { Play, Square, AlertCircle, Camera, Check, Clock, Edit2, MapPin, Plus, ShieldCheck, Droplet, Smile, MessageSquare, Trash, Sparkles, Footprints, ChevronUp, Copy, HelpCircle, Navigation } from 'lucide-react';
 import { Pet, Walk, ActivityEvent, ActivityEventType } from '../types';
+import MapComponent from './MapComponent';
 
 interface ActiveWalkViewProps {
   pets: Pet[];
-  onWalkFinished: (walk: Walk) => void;
+  onWalkFinished: (walk: Walk, activeWalkId?: string | null) => void;
   quickSelectedPetId?: string | null;
+  onInitActiveWalk?: (walkDraft: Omit<Walk, 'id'>) => Promise<string>;
+  onSyncActiveCoords?: (walkId: string, coords: { lat: number; lng: number }[], events: ActivityEvent[], photos: string[]) => Promise<void>;
+}
+
+// Haversine formula to compute distance in km between two GPS coordinates
+function getDistanceKM(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c; // Distance in km
 }
 
 // Default simulated camera shots
@@ -21,7 +37,13 @@ const MOCK_PHOTOS = [
   { id: 'p4', name: 'Descanso Sombra', url: 'https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?auto=format&fit=crop&q=80&w=400' },
 ];
 
-export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetId = null }: ActiveWalkViewProps) {
+export default function ActiveWalkView({ 
+  pets, 
+  onWalkFinished, 
+  quickSelectedPetId = null,
+  onInitActiveWalk,
+  onSyncActiveCoords
+}: ActiveWalkViewProps) {
   // App states
   const [selectedPetIds, setSelectedPetIds] = useState<string[]>(
     quickSelectedPetId ? [quickSelectedPetId] : []
@@ -33,10 +55,21 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
   const [photos, setPhotos] = useState<string[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
 
+  // Tutor sharing tracking states
+  const [onlineWalkId, setOnlineWalkId] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [isSharingLive, setIsSharingLive] = useState(false);
+
+  // GPS & Tracking states
+  const [trackingMode, setTrackingMode] = useState<'real' | 'simulated'>('real');
+  const [routeCoords, setRouteCoords] = useState<{ lat: number; lng: number }[]>([]);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+
   // Simulation metrics
   const [simulatedDistance, setSimulatedDistance] = useState(0); // km
   const [simulatedSpeed, setSimulatedSpeed] = useState(0); // km/h
-  const [gpsPoints, setGpsPoints] = useState<{ x: number; y: number }[]>([]);
+  const [gpsPoints, setGpsPoints] = useState<{ x: number; y: number }[]>([]); // backward compatible reference
 
   // Event logger helper modal
   const [activeEventModal, setActiveEventModal] = useState<ActivityEventType | null>(null);
@@ -46,9 +79,10 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
   const [finishedWalk, setFinishedWalk] = useState<Walk | null>(null);
   const [copiedMessage, setCopiedMessage] = useState(false);
 
-  // Interval timers reference
+  // Interval timers & Watch references
   const clockIntervalRef = useRef<any>(null);
   const simulationIntervalRef = useRef<any>(null);
+  const watchIdRef = useRef<number | null>(null);
 
   // Auto handle selected pet from deep-link starting
   useEffect(() => {
@@ -57,41 +91,152 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
     }
   }, [quickSelectedPetId, pets]);
 
-  // Start chronometer
+  // Master tracking loop effect
   useEffect(() => {
     if (isActive) {
+      // 1. Start general chronometer
       clockIntervalRef.current = setInterval(() => {
         setElapsedSeconds(prev => prev + 1);
       }, 1000);
 
-      // Setup GPS trail simulation coords
-      const trail = [{ x: 50, y: 150 }];
-      setGpsPoints(trail);
+      if (trackingMode === 'real') {
+        // --- REAL GPS TRACKING ---
+        if (navigator.geolocation) {
+          // Fire an initial geolocation check to speed up centering
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const { latitude, longitude } = pos.coords;
+              setRouteCoords([{ lat: latitude, lng: longitude }]);
+              setGpsPoints([{ x: 50, y: 150 }]); // backwards compatible
+            },
+            (err) => {
+              console.warn('Initial geolocation warning:', err);
+            }
+          );
 
-      simulationIntervalRef.current = setInterval(() => {
-        setSimulatedSpeed(3.8 + Math.random() * 1.5); // constant human walking speed
-        setSimulatedDistance(prev => {
-          const increment = (3.8 + Math.random() * 1.5) / 3600; // per second rate approx
-          return Number((prev + increment).toFixed(2));
-        });
-        setGpsPoints(prev => {
-          if (prev.length >= 12) return prev; // limit path coordinates length
-          const last = prev[prev.length - 1];
-          const newX = last.x + (15 + Math.random() * 15);
-          const newY = last.y + (Math.sin(last.x / 40) * 30 + (Math.random() - 0.5) * 15);
-          return [...prev, { x: newX, y: newY }];
-        });
-      }, 2000);
+          // Watch position continuously
+          const watchId = navigator.geolocation.watchPosition(
+            (position) => {
+              const { latitude, longitude, speed } = position.coords;
+              
+              setRouteCoords(prev => {
+                if (prev.length > 0) {
+                  const last = prev[prev.length - 1];
+                  const d = getDistanceKM(last.lat, last.lng, latitude, longitude);
+                  
+                  // Filter tiny GPS drift jitter (only move if > 3 meters)
+                  if (d < 0.003) return prev;
+
+                  // Add to overall physical distance walked
+                  setSimulatedDistance(prevDist => Number((prevDist + d).toFixed(2)));
+                } else {
+                  setSimulatedDistance(0);
+                }
+
+                if (speed !== null && speed !== undefined) {
+                  setSimulatedSpeed(Math.max(1.8, speed * 3.6)); // km/h
+                } else {
+                  setSimulatedSpeed(3.5 + Math.random() * 1.5); // generic walking speed
+                }
+
+                // Append backwards compatible coordinate point simulation representation
+                setGpsPoints(pts => {
+                  if (pts.length === 0) return [{ x: 50, y: 150 }];
+                  const lastPt = pts[pts.length - 1];
+                  return [...pts, { x: lastPt.x + 15, y: lastPt.y + (Math.random() - 0.5) * 10 }];
+                });
+
+                return [...prev, { lat: latitude, lng: longitude }];
+              });
+              setGpsError(null);
+            },
+            (error) => {
+              console.warn('Geolocation sensor error:', error);
+              let msg = 'Erro ao adquirir sinal do GPS.';
+              if (error.code === error.PERMISSION_DENIED) {
+                msg = 'Permissão de GPS negada pelo navegador.';
+              } else if (error.code === error.POSITION_UNAVAILABLE) {
+                msg = 'Sinal de satélite GPS indisponível.';
+              } else if (error.code === error.TIMEOUT) {
+                msg = 'Dispositivo demorou muito para responder GPS.';
+              }
+              setGpsError(msg);
+              // Fallback guide standard behavior to notice simulated alternative
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0
+            }
+          );
+          watchIdRef.current = watchId;
+        } else {
+          setGpsError('Este navegador não suporta geolocalização.');
+          setTrackingMode('simulated');
+        }
+      } else {
+        // --- ORGANIC GPS ROUTE SIMULATION ---
+        // Generates beautiful realistic walking trail in Parque do Ibirapuera, São Paulo
+        let angle = Math.random() * Math.PI * 2;
+        const startLat = -23.587413;
+        const startLng = -46.657639;
+        
+        setRouteCoords([{ lat: startLat, lng: startLng }]);
+        setGpsPoints([{ x: 50, y: 150 }]);
+        setSimulatedSpeed(4.2);
+
+        simulationIntervalRef.current = setInterval(() => {
+          setSimulatedSpeed(3.8 + Math.random() * 1.2);
+          
+          setRouteCoords(prev => {
+            const last = prev[prev.length - 1] || { lat: startLat, lng: startLng };
+            angle += (Math.random() - 0.5) * 0.45; // subtle turning rhythm
+            
+            const displacement = 0.00010 + Math.random() * 0.00003; // ~10 to 13 meters offset
+            const nextLat = last.lat + Math.cos(angle) * displacement;
+            const nextLng = last.lng + Math.sin(angle) * displacement;
+            
+            const d = getDistanceKM(last.lat, last.lng, nextLat, nextLng);
+            setSimulatedDistance(prevDist => Number((prevDist + d).toFixed(2)));
+
+            setGpsPoints(pts => {
+              const lastPt = pts[pts.length - 1] || { x: 50, y: 150 };
+              return [...pts, { x: lastPt.x + 15, y: lastPt.y + (Math.random() - 0.5) * 10 }];
+            });
+
+            return [...prev, { lat: nextLat, lng: nextLng }];
+          });
+        }, 2000);
+      }
     } else {
+      // Cleanup all trackers
       if (clockIntervalRef.current) clearInterval(clockIntervalRef.current);
       if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current);
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
     }
 
     return () => {
       if (clockIntervalRef.current) clearInterval(clockIntervalRef.current);
       if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current);
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
     };
-  }, [isActive]);
+  }, [isActive, trackingMode]);
+
+  // Periodic background Firestore sync when sharing is active
+  useEffect(() => {
+    if (isActive && onlineWalkId && onSyncActiveCoords) {
+      const syncInterval = setInterval(() => {
+        onSyncActiveCoords(onlineWalkId, routeCoords, events, photos);
+      }, 10000); // Sync every 10 seconds
+      return () => clearInterval(syncInterval);
+    }
+  }, [isActive, onlineWalkId, routeCoords, events, photos, onSyncActiveCoords]);
 
   const handleTogglePet = (petId: string) => {
     setSelectedPetIds(prev =>
@@ -111,7 +256,11 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
     setNotes('');
     setSimulatedDistance(0);
     setSimulatedSpeed(4.1);
+    setRouteCoords([]);
+    setGpsError(null);
     setIsActive(true);
+    setOnlineWalkId(null);
+    setIsSharingLive(false);
   };
 
   // Log active event
@@ -168,23 +317,82 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
     const endTime = new Date().toISOString();
     const duration = Math.max(1, Math.round(elapsedSeconds / 60));
 
+    const selectedPetsList = pets.filter(p => selectedPetIds.includes(p.id));
+    const petDetailsMapped = selectedPetsList.map(p => ({
+      name: p.name,
+      breed: p.breed,
+      photo: p.photo
+    }));
+
     const finalWalk: Walk = {
-      id: 'walk_' + Math.random().toString(36).substr(2, 9),
+      id: onlineWalkId || 'walk_' + Math.random().toString(36).substr(2, 9),
       userId: pets[0]?.userId || 'user_default',
       petIds: selectedPetIds,
+      petDetails: petDetailsMapped,
       startTime,
       endTime,
       durationMinutes: duration,
       notes: notes.trim() || 'Passeio realizado com sucesso.',
       photos,
       events,
-      routeSimulated: gpsPoints.map(p => ({ lat: p.x, lng: p.y }))
+      routeSimulated: routeCoords // real-world and simulated coordinates
     };
 
     // Save back to db
-    onWalkFinished(finalWalk);
+    onWalkFinished(finalWalk, onlineWalkId);
     setFinishedWalk(finalWalk);
     setIsActive(false);
+    setIsSharingLive(false);
+  };
+
+  const handleShareTracking = async () => {
+    if (!onInitActiveWalk) return;
+    
+    // If we already have configured an onlineWalkId, just copy its share URL
+    if (onlineWalkId) {
+      const shareUrl = `${window.location.origin}?sharedWalkId=${onlineWalkId}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+      return;
+    }
+
+    try {
+      setIsSyncing(true);
+      
+      const selectedPetsList = pets.filter(p => selectedPetIds.includes(p.id));
+      const petDetailsMapped = selectedPetsList.map(p => ({
+        name: p.name,
+        breed: p.breed,
+        photo: p.photo
+      }));
+
+      const walkDraft: Omit<Walk, 'id'> = {
+        userId: pets[0]?.userId || 'user_default',
+        petIds: selectedPetIds,
+        petDetails: petDetailsMapped,
+        startTime: startTime || new Date().toISOString(),
+        endTime: null,
+        durationMinutes: 0,
+        notes: '',
+        photos: photos,
+        events: events,
+        routeSimulated: routeCoords
+      };
+
+      const walkId = await onInitActiveWalk(walkDraft);
+      setOnlineWalkId(walkId);
+      setIsSharingLive(true);
+      
+      const shareUrl = `${window.location.origin}?sharedWalkId=${walkId}`;
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    } catch (err) {
+      console.error('Error starting live tracking share:', err);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const formatTime = (totalSecs: number) => {
@@ -323,40 +531,123 @@ export default function ActiveWalkView({ pets, onWalkFinished, quickSelectedPetI
           </div>
         </div>
 
-        {/* Live coordinate map tracker path */}
-        <div className="rounded-2xl border border-white/10 overflow-hidden bg-[#313123] p-4 relative h-40 sm:h-48">
-          <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-[#424231]/90 border border-white/10 text-[9px] font-bold uppercase text-[#FEFAE0] px-2 py-0.5 rounded-md z-15 backdrop-blur-xs">
-            <MapPin className="h-3 w-3 text-red-400" /> Sensor de Telemetria de Rota
+        {/* TUTOR REAL-TIME LINK SHARE */}
+        <div className="bg-[#313123] border border-white/10 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5 text-left">
+              <h4 className="text-xs font-bold text-white flex items-center gap-1.5 uppercase tracking-wide">
+                <Sparkles className="h-4 w-4 text-[#D4A373]" /> Compartilhar com o Tutor
+              </h4>
+              <p className="text-[10px] text-slate-300">Permita que o dono acompanhe o pet ao vivo pelo GPS sem precisar de login.</p>
+            </div>
+            {isSharingLive && (
+              <span className="flex items-center gap-1 bg-red-500/10 border border-red-500/30 px-2 py-0.5 rounded-full text-[8px] font-bold text-red-400 uppercase tracking-wider animate-pulse">
+                • Ativo
+              </span>
+            )}
           </div>
 
-          {/* Custom SVG simulated walker track line */}
-          <svg className="w-full h-full absolute inset-0 z-10" viewBox="0 0 450 180" xmlns="http://www.w3.org/2000/svg">
-            {/* Grid coordinate lines */}
-            <line x1="0" y1="30" x2="450" y2="30" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3,3" />
-            <line x1="0" y1="90" x2="450" y2="90" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3,3" />
-            <line x1="0" y1="150" x2="450" y2="150" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3,3" />
-            
-            {/* The actual line trail */}
-            {gpsPoints.length > 1 && (
-              <polyline
-                fill="none"
-                stroke="#E9EDC9"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray="2, 2"
-                points={gpsPoints.map(p => `${p.x},${p.y}`).join(' ')}
-              />
-            )}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              disabled={isSyncing}
+              onClick={handleShareTracking}
+              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                isSharingLive 
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white' 
+                  : 'bg-[#D4A373] hover:bg-[#E2B384] text-[#424231]'
+              }`}
+            >
+              {isSyncing ? (
+                <>
+                  <span className="h-3.5 w-3.5 border-2 border-[#424231] border-t-transparent rounded-full animate-spin" />
+                  Gerando Link...
+                </>
+              ) : copiedLink ? (
+                <>
+                  <Check className="h-4 w-4" /> Link Copiado! ✓
+                </>
+              ) : isSharingLive ? (
+                <>
+                  <Copy className="h-4 w-4" /> Copiar Link de Acompanhamento
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" /> Ativar Rastreamento ao Vivo
+                </>
+              )}
+            </button>
 
-            {/* Current walking dot locator */}
-            {gpsPoints.length > 0 && (
-              <g transform={`translate(${gpsPoints[gpsPoints.length - 1].x}, ${gpsPoints[gpsPoints.length - 1].y})`}>
-                <circle r="10" fill="rgba(233, 237, 201, 0.2)" className="animate-ping" />
-                <circle r="5" fill="#E9EDC9" />
-              </g>
+            {isSharingLive && (
+              <a
+                href={`https://api.whatsapp.com/send?text=${encodeURIComponent(
+                  `Olá! Já iniciei o passeio do seu pet. Você de onde estiver pode acompanhar o trajeto exato através do link do GPS em tempo real: ${window.location.origin}?sharedWalkId=${onlineWalkId}`
+                )}`}
+                target="_blank"
+                rel="noreferrer"
+                className="py-2.5 px-4 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-400 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+              >
+                💬 Enviar WhatsApp
+              </a>
             )}
-          </svg>
+          </div>
+        </div>
+
+        {/* GPS Mode Selector and Status Warnings */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+            <span className="text-[10px] font-bold text-[#FEFAE0]/70 tracking-wider uppercase flex items-center gap-1">
+              <Navigation className="h-3.5 w-3.5 text-[#E9EDC9]" /> Conexão do Rastreamento GPS
+            </span>
+            <div className="flex bg-[#313123] rounded-lg p-0.5 border border-white/10">
+              <button
+                type="button"
+                onClick={() => setTrackingMode('real')}
+                className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                  trackingMode === 'real'
+                    ? 'bg-[#5A5A40] text-[#FEFAE0]'
+                    : 'text-[#FEFAE0]/60 hover:text-white'
+                }`}
+              >
+                📡 GPS Real
+              </button>
+              <button
+                type="button"
+                onClick={() => setTrackingMode('simulated')}
+                className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
+                  trackingMode === 'simulated'
+                    ? 'bg-[#5A5A40] text-[#FEFAE0]'
+                    : 'text-[#FEFAE0]/60 hover:text-white'
+                }`}
+              >
+                🤖 Simulador
+              </button>
+            </div>
+          </div>
+
+          {gpsError && trackingMode === 'real' && (
+            <div className="flex items-start gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 text-yellow-300 text-xs text-left">
+              <AlertCircle className="h-4.5 w-4.5 shrink-0 text-yellow-400 mt-0.5" />
+              <div>
+                <span className="font-bold">Aviso de Sinal: </span>
+                {gpsError} Autorize a permissão de localização do seu navegador ou mude para o modo <b>Simulador</b> para testar a rota em tempo real.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Live coordinate map tracker path */}
+        <div className="relative rounded-2xl overflow-hidden border border-white/10 bg-[#313123]">
+          <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-[#424231]/90 border border-white/15 text-[9px] font-bold uppercase text-[#FEFAE0] px-2.5 py-1 rounded-md z-25 backdrop-blur-xs pointer-events-none shadow-sm">
+            <span className={`h-2 w-2 rounded-full ${trackingMode === 'real' && !gpsError ? 'bg-emerald-400 animate-pulse' : 'bg-[#E9EDC9] animate-pulse'}`} />
+            {trackingMode === 'real' ? 'Acompanhamento GPS (Satélite)' : 'Modo Demonstração (Simulado)'}
+          </div>
+
+          <MapComponent 
+            coordinates={routeCoords} 
+            heightClass="h-44 sm:h-52" 
+            interactive={true} 
+          />
         </div>
 
         {/* Quick event toggles logs console */}

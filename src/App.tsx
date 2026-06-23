@@ -5,11 +5,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { LayoutGrid, Users, Dog, Footprints, History, LogOut, HelpCircle, Heart, Menu, X, CheckSquare } from 'lucide-react';
+import { LayoutGrid, Users, Dog, Footprints, History, LogOut, HelpCircle, Heart, Menu, X, CheckSquare, Calendar } from 'lucide-react';
 import { auth } from './utils/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { FirebaseService } from './utils/firebaseService';
-import { User, Client, Pet, Walk } from './types';
+import { User, Client, Pet, Walk, ScheduledWalk, ActivityEvent } from './types';
 
 // Importing view components
 import AuthView from './components/AuthView';
@@ -18,15 +18,22 @@ import ClientsView from './components/ClientsView';
 import PetsView from './components/PetsView';
 import ActiveWalkView from './components/ActiveWalkView';
 import HistoryView from './components/HistoryView';
+import ScheduleView from './components/ScheduleView';
+import TutorTrackingView from './components/TutorTrackingView';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentView, setCurrentView] = useState<'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history' | 'agenda'>('dashboard');
+  const [sharedWalkId, setSharedWalkId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('sharedWalkId');
+  });
 
   // Core synchronized React states
   const [clients, setClients] = useState<Client[]>([]);
   const [pets, setPets] = useState<Pet[]>([]);
   const [walks, setWalks] = useState<Walk[]>([]);
+  const [scheduledWalks, setScheduledWalks] = useState<ScheduledWalk[]>([]);
 
   // Selected quickpet state for agenda deep initiation
   const [quickPetId, setQuickPetId] = useState<string | null>(null);
@@ -81,6 +88,7 @@ export default function App() {
         setClients([]);
         setPets([]);
         setWalks([]);
+        setScheduledWalks([]);
         setQuickPetId(null);
       }
       setIsInitializing(false);
@@ -91,14 +99,16 @@ export default function App() {
   const loadUserData = async (userId: string) => {
     setIsDataLoading(true);
     try {
-      const [lClients, lPets, lWalks] = await Promise.all([
+      const [lClients, lPets, lWalks, lScheduled] = await Promise.all([
         FirebaseService.getClients(userId),
         FirebaseService.getPets(userId),
-        FirebaseService.getWalks(userId)
+        FirebaseService.getWalks(userId),
+        FirebaseService.getScheduledWalks(userId)
       ]);
       setClients(lClients);
       setPets(lPets);
       setWalks(lWalks);
+      setScheduledWalks(lScheduled);
     } catch (err) {
       console.error('Error loading firebase data:', err);
     } finally {
@@ -123,6 +133,7 @@ export default function App() {
           setClients([]);
           setPets([]);
           setWalks([]);
+          setScheduledWalks([]);
           setQuickPetId(null);
           setCurrentView('dashboard');
           showAlert('Sessão encerrada com sucesso.', 'success');
@@ -214,12 +225,40 @@ export default function App() {
   };
 
   // --- WALK ACTIONS ---
-  const handleWalkFinished = async (completedWalk: Walk) => {
+  const handleInitActiveWalk = async (walkDraft: Omit<Walk, 'id'>): Promise<string> => {
+    if (!currentUser) throw new Error("Usuário não autenticado.");
+    const savedWalk = await FirebaseService.addWalk(currentUser.id, walkDraft);
+    setWalks(prev => [savedWalk, ...prev]);
+    return savedWalk.id;
+  };
+
+  const handleSyncActiveCoords = async (
+    walkId: string,
+    coords: { lat: number; lng: number }[],
+    events: ActivityEvent[],
+    photos: string[]
+  ) => {
+    if (!currentUser) return;
+    try {
+      await FirebaseService.updateWalk(currentUser.id, walkId, {
+        routeSimulated: coords,
+        events,
+        photos
+      });
+      // Dynamically update locally synced state
+      setWalks(prev => prev.map(w => w.id === walkId ? { ...w, routeSimulated: coords, events, photos } : w));
+    } catch (err) {
+      console.error('Error syncing walk coords to firestore:', err);
+    }
+  };
+
+  const handleWalkFinished = async (completedWalk: Walk, activeWalkId?: string | null) => {
     if (!currentUser) return;
     try {
       const walkData = {
         userId: completedWalk.userId,
         petIds: completedWalk.petIds,
+        petDetails: completedWalk.petDetails,
         startTime: completedWalk.startTime,
         endTime: completedWalk.endTime,
         durationMinutes: completedWalk.durationMinutes,
@@ -228,8 +267,17 @@ export default function App() {
         events: completedWalk.events,
         routeSimulated: completedWalk.routeSimulated || []
       };
-      const savedWalk = await FirebaseService.addWalk(currentUser.id, walkData);
-      setWalks(prev => [savedWalk, ...prev]);
+
+      if (activeWalkId) {
+        // Walk already provisioned during sharing, complete the existing record!
+        await FirebaseService.updateWalk(currentUser.id, activeWalkId, walkData);
+        setWalks(prev => prev.map(w => w.id === activeWalkId ? { ...w, ...walkData } : w));
+      } else {
+        // New walk created on the fly
+        const savedWalk = await FirebaseService.addWalk(currentUser.id, walkData);
+        setWalks(prev => [savedWalk, ...prev]);
+      }
+      
       setQuickPetId(null); // Clean up selection
       showAlert('Passeio registrado com sucesso!', 'success');
     } catch (err: any) {
@@ -242,17 +290,70 @@ export default function App() {
     setCurrentView('active-walk');
   };
 
-  const handleNavigateWithClear = (view: 'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history') => {
+  const handleNavigateWithClear = (view: 'dashboard' | 'clients' | 'pets' | 'active-walk' | 'history' | 'agenda') => {
     if (view !== 'active-walk') {
       setQuickPetId(null);
     }
     setCurrentView(view);
   };
 
+  // --- AGENDA / SCHEDULE ACTIONS ---
+  const handleAddScheduledWalk = async (scheduledData: Omit<ScheduledWalk, 'id' | 'userId'>) => {
+    if (!currentUser) return;
+    try {
+      const newScheduled = await FirebaseService.addScheduledWalk(currentUser.id, scheduledData);
+      setScheduledWalks(prev => [newScheduled, ...prev]);
+      showAlert('Compromisso agendado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao agendar compromisso.', 'error');
+    }
+  };
+
+  const handleUpdateScheduledWalk = async (updatedScheduled: ScheduledWalk) => {
+    if (!currentUser) return;
+    try {
+      await FirebaseService.updateScheduledWalk(currentUser.id, updatedScheduled);
+      setScheduledWalks(prev => prev.map(s => s.id === updatedScheduled.id ? updatedScheduled : s));
+      showAlert('Agendamento atualizado com sucesso!', 'success');
+    } catch (err: any) {
+      showAlert(err.message || 'Erro ao atualizar agendamento.', 'error');
+    }
+  };
+
+  const handleDeleteScheduledWalk = async (scheduledId: string) => {
+    if (!currentUser) return;
+    showConfirm(
+      'Remover agendamento?',
+      'Esta ação é permanente e excluirá o agendamento da agenda.',
+      async () => {
+        try {
+          await FirebaseService.deleteScheduledWalk(currentUser.id, scheduledId);
+          setScheduledWalks(prev => prev.filter(s => s.id !== scheduledId));
+          showAlert('Agendamento removido com sucesso.', 'success');
+        } catch (err: any) {
+          showAlert(err.message || 'Erro ao remover agendamento.', 'error');
+        }
+      }
+    );
+  };
+
   // Quick helper to route directly to register a pet for a client
   const handleQuickAddPetForClient = (clientId: string) => {
     setCurrentView('pets');
   };
+
+  // Render tutor tracking publicly first
+  if (sharedWalkId) {
+    return (
+      <TutorTrackingView 
+        walkId={sharedWalkId} 
+        onClose={() => {
+          setSharedWalkId(null);
+          window.history.replaceState({}, '', window.location.pathname);
+        }}
+      />
+    );
+  }
 
   // Initializing Loader
   if (isInitializing) {
@@ -315,6 +416,14 @@ export default function App() {
           >
             <Dog className="h-4.5 w-4.5 shrink-0" />
             Fichas dos Pets
+          </button>
+
+          <button
+            onClick={() => handleNavigateWithClear('agenda')}
+            className={`w-full py-2.5 px-3.5 rounded-xl text-sm font-medium transition-all flex items-center gap-3 cursor-pointer ${currentView === 'agenda' ? 'bg-[#D4A373] text-white shadow-xs' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}
+          >
+            <Calendar className="h-4.5 w-4.5 shrink-0" />
+            Agenda de Atendimentos
           </button>
 
           <button
@@ -382,6 +491,7 @@ export default function App() {
                 walks={walks} 
                 onNavigate={handleNavigateWithClear}
                 onStartSpecificWalk={handleStartWalkFromAgenda}
+                dbScheduledWalks={scheduledWalks}
               />
             )}
 
@@ -411,6 +521,8 @@ export default function App() {
                 pets={pets} 
                 onWalkFinished={handleWalkFinished}
                 quickSelectedPetId={quickPetId}
+                onInitActiveWalk={handleInitActiveWalk}
+                onSyncActiveCoords={handleSyncActiveCoords}
               />
             )}
 
@@ -419,6 +531,18 @@ export default function App() {
                 walks={walks} 
                 pets={pets} 
                 clients={clients}
+              />
+            )}
+
+            {currentView === 'agenda' && (
+              <ScheduleView 
+                scheduledWalks={scheduledWalks}
+                pets={pets}
+                clients={clients}
+                onAddScheduledWalk={handleAddScheduledWalk}
+                onUpdateScheduledWalk={handleUpdateScheduledWalk}
+                onDeleteScheduledWalk={handleDeleteScheduledWalk}
+                onStartWalkFromAgenda={handleStartWalkFromAgenda}
               />
             )}
           </motion.div>
@@ -459,6 +583,14 @@ export default function App() {
             <Footprints className="h-5 w-5" />
           </div>
           <span className="text-[9px] tracking-wide mt-4">Passeio</span>
+        </button>
+
+        <button
+          onClick={() => handleNavigateWithClear('agenda')}
+          className={`flex-1 flex flex-col items-center gap-1 py-1 ${currentView === 'agenda' ? 'text-[#FEFAE0] font-bold' : 'hover:text-white'}`}
+        >
+          <Calendar className="h-5 w-5" />
+          <span className="text-[9px] tracking-wide">Agenda</span>
         </button>
 
         <button

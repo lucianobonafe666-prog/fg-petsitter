@@ -10,7 +10,9 @@ import {
   signOut, 
   updateProfile,
   onAuthStateChanged,
-  User as FirebaseUser
+  User as FirebaseUser,
+  GoogleAuthProvider,
+  signInWithPopup
 } from 'firebase/auth';
 import { 
   collection, 
@@ -25,7 +27,65 @@ import {
   getDoc, 
   orderBy 
 } from 'firebase/firestore';
-import { Client, Pet, Walk, User } from '../types';
+import { Client, Pet, Walk, User, ScheduledWalk } from '../types';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid || null,
+      email: auth.currentUser?.email || null,
+      emailVerified: auth.currentUser?.emailVerified || null,
+      isAnonymous: auth.currentUser?.isAnonymous || null,
+      tenantId: auth.currentUser?.tenantId || null,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error Detailed: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+function isPermissionError(error: any): boolean {
+  if (!error) return false;
+  const msg = String(error.message || error || '').toLowerCase();
+  return (
+    error.code === 'permission-denied' ||
+    msg.includes('permission') ||
+    msg.includes('permissão') ||
+    msg.includes('insufficient')
+  );
+}
 
 export const FirebaseService = {
   // --- AUTH OPERATIONS ---
@@ -79,6 +139,29 @@ export const FirebaseService = {
         throw new Error('O login por e-mail e senha não está ativo no Firebase. Ative "Email/Password" em "Authentication -> Sign-in method" no console.');
       } else if (error.code === 'auth/configuration-not-found') {
         throw new Error('Serviço de Autenticação não configurado no console Firebase. Acesse "Authentication" -> "Get Started" e selecione "E-mail/Senha" como provedor.');
+      } else {
+        throw new Error(error.message || 'Erro ao realizar login.');
+      }
+    }
+  },
+
+  async loginWithGoogle(): Promise<User> {
+    try {
+      const provider = new GoogleAuthProvider();
+      // Emphasize popup per standard instructions for previews/iFrames
+      const userCredential = await signInWithPopup(auth, provider);
+      const firebaseUser = userCredential.user;
+      return {
+        id: firebaseUser.uid,
+        name: firebaseUser.displayName || 'Utilizador Google',
+        email: firebaseUser.email || ''
+      };
+    } catch (error: any) {
+      console.error('Error in loginWithGoogle:', error);
+      if (error.code === 'auth/popup-closed-by-user') {
+        throw new Error('O login com Google foi cancelado por fechar a janela.');
+      } else if (error.code === 'auth/configuration-not-found') {
+        throw new Error('O login social do Google não está ativado no Firebase ou precisa de configuração de domínio.');
       } else {
         throw new Error(error.message || 'Erro ao realizar login.');
       }
@@ -308,6 +391,7 @@ export const FirebaseService = {
           id: doc.id,
           userId: data.userId || userId,
           petIds: data.petIds || [],
+          petDetails: data.petDetails || [],
           startTime: data.startTime || '',
           endTime: data.endTime || null,
           durationMinutes: Number(data.durationMinutes) || 0,
@@ -331,6 +415,7 @@ export const FirebaseService = {
             id: doc.id,
             userId: data.userId || userId,
             petIds: data.petIds || [],
+            petDetails: data.petDetails || [],
             startTime: data.startTime || '',
             endTime: data.endTime || null,
             durationMinutes: Number(data.durationMinutes) || 0,
@@ -363,6 +448,165 @@ export const FirebaseService = {
     } catch (error: any) {
       console.error('Error adding walk:', error);
       throw new Error(error.message || 'Erro ao salvar passeio.');
+    }
+  },
+
+  async getWalkById(walkId: string): Promise<Walk | null> {
+    try {
+      const docRef = doc(db, 'passeios', walkId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        return {
+          id: docSnap.id,
+          userId: data.userId || '',
+          petIds: data.petIds || [],
+          petDetails: data.petDetails || [],
+          startTime: data.startTime || '',
+          endTime: data.endTime || null,
+          durationMinutes: Number(data.durationMinutes) || 0,
+          notes: data.notes || '',
+          photos: data.photos || [],
+          events: data.events || [],
+          routeSimulated: data.routeSimulated || []
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching walk by id:', error);
+      return null;
+    }
+  },
+
+  async updateWalk(userId: string, walkId: string, updates: Partial<Omit<Walk, 'id' | 'userId'>>): Promise<void> {
+    try {
+      const docRef = doc(db, 'passeios', walkId);
+      await updateDoc(docRef, updates);
+    } catch (error: any) {
+      console.error('Error updating walk:', error);
+      if (isPermissionError(error)) {
+        handleFirestoreError(error, OperationType.UPDATE, `passeios/${walkId}`);
+      }
+      throw new Error(error.message || 'Erro ao atualizar dados do passeio.');
+    }
+  },
+
+  // --- SCHEDULE OPERATIONS ---
+  async getScheduledWalks(userId: string): Promise<ScheduledWalk[]> {
+    try {
+      const q = query(
+        collection(db, 'agendamentos'),
+        where('userId', '==', userId),
+        orderBy('date', 'asc')
+      );
+      const snapshot = await getDocs(q);
+      const scheduled: ScheduledWalk[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        scheduled.push({
+          id: doc.id,
+          userId: data.userId || userId,
+          petId: data.petId || '',
+          date: data.date || '',
+          time: data.time || '',
+          type: data.type || 'Passeio',
+          duration: data.duration || '30 min',
+          notes: data.notes || '',
+          status: data.status || 'Pendente'
+        });
+      });
+      return scheduled;
+    } catch (error: any) {
+      console.error('Error fetching scheduled walks:', error);
+      if (isPermissionError(error)) {
+        handleFirestoreError(error, OperationType.LIST, 'agendamentos');
+      }
+      try {
+        // Fallback without ordering (in case index is still building)
+        const qFallback = query(collection(db, 'agendamentos'), where('userId', '==', userId));
+        const snapshot = await getDocs(qFallback);
+        const scheduled: ScheduledWalk[] = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          scheduled.push({
+            id: doc.id,
+            userId: data.userId || userId,
+            petId: data.petId || '',
+            date: data.date || '',
+            time: data.time || '',
+            type: data.type || 'Passeio',
+            duration: data.duration || '30 min',
+            notes: data.notes || '',
+            status: data.status || 'Pendente'
+          });
+        });
+        return scheduled.sort((a, b) => {
+          const dateTimeA = `${a.date}T${a.time}`;
+          const dateTimeB = `${b.date}T${b.time}`;
+          return dateTimeA.localeCompare(dateTimeB);
+        });
+      } catch (innerErr) {
+        console.error('Fallback fetching scheduled walks failed:', innerErr);
+        if (isPermissionError(innerErr)) {
+          handleFirestoreError(innerErr, OperationType.LIST, 'agendamentos');
+        }
+        return [];
+      }
+    }
+  },
+
+  async addScheduledWalk(userId: string, scheduledWalk: Omit<ScheduledWalk, 'id' | 'userId'>): Promise<ScheduledWalk> {
+    try {
+      const agendamentosColl = collection(db, 'agendamentos');
+      const docRef = await addDoc(agendamentosColl, {
+        ...scheduledWalk,
+        userId
+      });
+      return {
+        ...scheduledWalk,
+        id: docRef.id,
+        userId
+      };
+    } catch (error: any) {
+      console.error('Error adding scheduled walk:', error);
+      if (isPermissionError(error)) {
+        handleFirestoreError(error, OperationType.CREATE, 'agendamentos');
+      }
+      throw new Error(error.message || 'Erro ao agendar passeio.');
+    }
+  },
+
+  async updateScheduledWalk(userId: string, scheduled: ScheduledWalk): Promise<void> {
+    try {
+      const docRef = doc(db, 'agendamentos', scheduled.id);
+      await updateDoc(docRef, {
+        petId: scheduled.petId,
+        date: scheduled.date,
+        time: scheduled.time,
+        type: scheduled.type,
+        duration: scheduled.duration,
+        notes: scheduled.notes || '',
+        status: scheduled.status
+      });
+    } catch (error: any) {
+      console.error('Error updating scheduled walk:', error);
+      if (isPermissionError(error)) {
+        handleFirestoreError(error, OperationType.UPDATE, `agendamentos/${scheduled.id}`);
+      }
+      throw new Error(error.message || 'Erro ao atualizar agendamento.');
+    }
+  },
+
+  async deleteScheduledWalk(userId: string, scheduledId: string): Promise<void> {
+    try {
+      const docRef = doc(db, 'agendamentos', scheduledId);
+      await deleteDoc(docRef);
+    } catch (error: any) {
+      console.error('Error deleting scheduled walk:', error);
+      if (isPermissionError(error)) {
+        handleFirestoreError(error, OperationType.DELETE, `agendamentos/${scheduledId}`);
+      }
+      throw new Error(error.message || 'Erro ao deletar agendamento.');
     }
   }
 };
